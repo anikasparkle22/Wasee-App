@@ -102,17 +102,30 @@ async function getDriverInfo(driverId) {
 
 /**
  * Persist a new ride request.
+ * Only truly-pending rides (status === 'pending') are enqueued in PENDING_RIDES_KEY.
+ * Auto-matched rides (status === 'matched') skip the queue.
  * @param {string} rideId
- * @param {object} fields
+ * @param {object} fields  – must include a `status` field
  */
 async function createRide(rideId, fields) {
-  await client.hset(rideKey(rideId), {
+  const rideFields = {
     id: rideId,
-    status: 'pending',
+    status: 'pending', // default; overridden by fields.status if provided
     createdAt: new Date().toISOString(),
     ...Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v)])),
-  });
-  await client.lpush(PENDING_RIDES_KEY, rideId);
+  };
+  await client.hset(rideKey(rideId), rideFields);
+  if (rideFields.status === 'pending') {
+    await client.lpush(PENDING_RIDES_KEY, rideId);
+  }
+}
+
+/**
+ * Remove a ride ID from the pending queue (used when a ride is accepted or cancelled).
+ * @param {string} rideId
+ */
+async function removePendingRide(rideId) {
+  await client.lrem(PENDING_RIDES_KEY, 0, rideId);
 }
 
 /**
@@ -150,4 +163,5 @@ module.exports = {
   createRide,
   getRide,
   updateRide,
+  removePendingRide,
 };

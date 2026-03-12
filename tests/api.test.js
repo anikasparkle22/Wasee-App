@@ -343,3 +343,125 @@ describe('Ride status state-machine transitions', () => {
     expect(res.status).toBe(409);
   });
 });
+
+// ─── Coordinate range validation ──────────────────────────────────────────────
+describe('Coordinate range validation', () => {
+  it('POST /drivers/:id/location – 400 when longitude out of range', async () => {
+    const res = await request(app)
+      .post('/drivers/driver-coord-test/location')
+      .send({ longitude: 200, latitude: 33.5 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/longitude/);
+  });
+
+  it('POST /drivers/:id/location – 400 when latitude out of range', async () => {
+    const res = await request(app)
+      .post('/drivers/driver-coord-test/location')
+      .send({ longitude: 36.3, latitude: 95 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/latitude/);
+  });
+
+  it('POST /drivers/nearby – 400 when radiusKm is zero', async () => {
+    const res = await request(app)
+      .post('/drivers/nearby')
+      .send({ longitude: 36.3, latitude: 33.5, radiusKm: 0 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/radiusKm/);
+  });
+
+  it('POST /drivers/nearby – 400 when radiusKm is negative', async () => {
+    const res = await request(app)
+      .post('/drivers/nearby')
+      .send({ longitude: 36.3, latitude: 33.5, radiusKm: -5 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/radiusKm/);
+  });
+
+  it('POST /rides – 400 when pickup longitude out of range', async () => {
+    const res = await request(app).post('/rides').send({
+      riderId: 'rider-coord-test',
+      pickupLng: -200,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /rides – 400 when dropoff latitude out of range', async () => {
+    const res = await request(app).post('/rides').send({
+      riderId: 'rider-coord-test',
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: -100,
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ─── Pending queue correctness ────────────────────────────────────────────────
+describe('rides:pending queue correctness', () => {
+  it('auto-matched rides do NOT appear in the pending queue', async () => {
+    // Register a fresh driver so we always get a match
+    await request(app)
+      .post('/drivers/driver-queue-test/location')
+      .send({ longitude: 36.3, latitude: 33.5, name: 'Queue Driver', vehicle: 'Sedan' });
+
+    const res = await request(app).post('/rides').send({
+      riderId: 'rider-queue-test',
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    expect(res.body.ride.status).toBe('matched');
+
+    // The ride ID must NOT appear in rides:pending
+    const inQueue = await redis.lrange('rides:pending', 0, -1);
+    expect(inQueue).not.toContain(res.body.ride.id);
+  });
+
+  it('pending rides are removed from the queue when manually accepted', async () => {
+    await redis.del('geo:drivers:available');
+    const created = await request(app).post('/rides').send({
+      riderId: 'rider-queue-pending',
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    const pendingId = created.body.ride.id;
+    expect(created.body.ride.status).toBe('pending');
+
+    // Should be in the pending queue
+    const before = await redis.lrange('rides:pending', 0, -1);
+    expect(before).toContain(pendingId);
+
+    // Accept the ride
+    await request(app)
+      .put(`/rides/${pendingId}/accept`)
+      .send({ driverId: 'driver-acceptor-queue' });
+
+    // Should no longer be in the pending queue
+    const after = await redis.lrange('rides:pending', 0, -1);
+    expect(after).not.toContain(pendingId);
+  });
+});
+
+// ─── Multi-origin CORS ────────────────────────────────────────────────────────
+describe('Multi-origin CORS', () => {
+  const originalCorsOrigin = process.env.CORS_ORIGIN;
+
+  afterEach(() => {
+    process.env.CORS_ORIGIN = originalCorsOrigin;
+  });
+
+  it('single CORS_ORIGIN allows that origin', async () => {
+    const res = await request(app)
+      .get('/health')
+      .set('Origin', 'http://localhost:5173');
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+  });
+});

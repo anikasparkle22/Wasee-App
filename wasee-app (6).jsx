@@ -1,5 +1,22 @@
 import { useState, useEffect, useRef } from "react";
 
+// ─── Backend API integration ──────────────────────────────────────────────────
+const API_BASE = (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_URL) || "http://localhost:3000";
+
+async function apiFetch(path, options = {}) {
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+    const data = await res.json();
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  }
+}
+
 const C = {
   bg:"#F2F0EB", surface:"#FFFFFF", surface2:"#EDEAE3",
   ink:"#1C1C1A", ink2:"#6B6860", ink3:"#ABABAB", border:"#E0DDD6",
@@ -470,7 +487,7 @@ function AuthModal({ onClose, onSuccess, lang }) {
 }
 
 // ─── DRIVER PORTAL ─────────────────────────────────────────────────────────────
-function DriverPortal({ onBack, lang }) {
+function DriverPortal({ onBack, lang, pendingRideId }) {
   const [step, setStep] = useState(0); // 0=intro/sub, 1=form, 2=docs, 3=dashboard
   const [subscribed, setSubscribed] = useState(false);
   const [subscribing, setSubscribing] = useState(false);
@@ -481,6 +498,9 @@ function DriverPortal({ onBack, lang }) {
   const [driverLat, setDriverLat] = useState(33.5138);
   const [driverLng, setDriverLng] = useState(36.2765);
   const [locationTracking, setLocationTracking] = useState(false);
+
+  // Stable driver ID (generated once per portal session)
+  const driverIdRef = useRef("driver-" + Math.random().toString(36).slice(2, 10));
 
   // Ride request state
   const [incomingRequest, setIncomingRequest] = useState(null);
@@ -496,18 +516,34 @@ function DriverPortal({ onBack, lang }) {
   const locationRef = useRef(null);
   const requestTimerRef = useRef(null);
   const tripTimerRef = useRef(null);
+  // Keep driverForm in a ref so effects always read the latest values without re-subscribing
+  const driverFormRef = useRef(driverForm);
+  useEffect(()=>{ driverFormRef.current=driverForm; },[driverForm]);
   const T = TRANSLATIONS[lang];
 
-  // Location drift while online
+  // Helper: build the payload sent to the driver-location endpoint
+  const buildDriverPayload=(lng,lat)=>({longitude:lng,latitude:lat,name:driverFormRef.current.name||"Driver",vehicle:`${driverFormRef.current.carMake} ${driverFormRef.current.carModel}`.trim()||"Vehicle"});
+
+  // Helper: resolve the active backend ride ID
+  const getActiveRideId=()=>pendingRideId||currentTrip?.rideId;
+
+  // Location drift while online – also syncs position to backend
   useEffect(()=>{
     if(locationTracking && driverStatus!=="offline"){
       locationRef.current=setInterval(()=>{
-        setDriverLat(l=>l+(Math.random()-0.5)*0.001);
-        setDriverLng(l=>l+(Math.random()-0.5)*0.001);
+        setDriverLat(l=>{
+          const newLat=l+(Math.random()-0.5)*0.001;
+          setDriverLng(lng=>{
+            const newLng=lng+(Math.random()-0.5)*0.001;
+            apiFetch(`/drivers/${driverIdRef.current}/location`,{method:"POST",body:buildDriverPayload(newLng,newLat)});
+            return newLng;
+          });
+          return newLat;
+        });
       },3000);
       return ()=>clearInterval(locationRef.current);
     } else clearInterval(locationRef.current);
-  },[locationTracking,driverStatus]);
+  },[locationTracking,driverStatus]); // eslint-disable-line
 
   // Simulate incoming ride request 8s after going online
   useEffect(()=>{
@@ -533,12 +569,29 @@ function DriverPortal({ onBack, lang }) {
   },[tripPhase]);
 
   const startTracking=()=>{
-    if(navigator.geolocation) navigator.geolocation.getCurrentPosition(p=>{setDriverLat(p.coords.latitude);setDriverLng(p.coords.longitude);},()=>{});
+    if(navigator.geolocation){
+      navigator.geolocation.getCurrentPosition(p=>{
+        const lat=p.coords.latitude, lng=p.coords.longitude;
+        setDriverLat(lat); setDriverLng(lng);
+        apiFetch(`/drivers/${driverIdRef.current}/location`,{method:"POST",body:buildDriverPayload(lng,lat)});
+      },()=>{
+        apiFetch(`/drivers/${driverIdRef.current}/location`,{method:"POST",body:buildDriverPayload(driverLng,driverLat)});
+      });
+    } else {
+      apiFetch(`/drivers/${driverIdRef.current}/location`,{method:"POST",body:buildDriverPayload(driverLng,driverLat)});
+    }
     setLocationTracking(true); setDriverStatus("available");
   };
-  const stopTracking=()=>{ setLocationTracking(false); setDriverStatus("offline"); };
+  const stopTracking=()=>{
+    apiFetch(`/drivers/${driverIdRef.current}/location`,{method:"DELETE"});
+    setLocationTracking(false); setDriverStatus("offline");
+  };
 
   const handleAccept=()=>{
+    const rideId=getActiveRideId()||pendingRideId;
+    if(rideId){
+      apiFetch(`/rides/${rideId}/accept`,{method:"PUT",body:{driverId:driverIdRef.current}});
+    }
     setIncomingRequest(null); setDriverStatus("on_trip");
     setCurrentTrip(incomingRequest); setTripPhase("navigating");
   };
@@ -549,14 +602,20 @@ function DriverPortal({ onBack, lang }) {
       if(driverStatus==="available") setIncomingRequest({name:"محمد أحمد",nameEn:"Mohammad A.",from:"Umayyad Mosque",to:"Homs Bus Station",fromCoords:{lat:33.5115,lng:36.3066},toCoords:{lat:33.5138,lng:36.2765},dist:"4.7",fare:"4.60",eta:6});
     },6000);
   };
-  const handleStartTrip=()=>{ setTripPhase("in_trip"); setTripTimer(0); };
+  const handleStartTrip=()=>{
+    const rideId=getActiveRideId();
+    if(rideId) apiFetch(`/rides/${rideId}/status`,{method:"PUT",body:{status:"in_progress"}});
+    setTripPhase("in_trip"); setTripTimer(0);
+  };
   const handleEndTrip=()=>{
+    const rideId=getActiveRideId();
+    if(rideId) apiFetch(`/rides/${rideId}/status`,{method:"PUT",body:{status:"completed"}});
     setTripPhase("ended");
     clearInterval(tripTimerRef.current);
     const earned=parseFloat(currentTrip?.fare||"4.00");
     // Store trip data
     storeTripData({
-      driver:driverForm.name||"Driver",
+      driver:driverFormRef.current.name||"Driver",
       from:currentTrip?.from, to:currentTrip?.to,
       passenger:currentTrip?.name, dist:currentTrip?.dist,
       fare:earned, cash:true, duration:tripTimer
@@ -568,7 +627,11 @@ function DriverPortal({ onBack, lang }) {
       history:[{from:currentTrip?.from,to:currentTrip?.to,fare:earned,dist:currentTrip?.dist,ts:new Date().toLocaleTimeString()},...e.history.slice(0,4)]
     }));
   };
-  const handleNewTrip=()=>{ setTripPhase("idle"); setCurrentTrip(null); setPassengerRating(0); setDriverStatus("available"); };
+  const handleNewTrip=()=>{
+    // Re-register driver as available
+    apiFetch(`/drivers/${driverIdRef.current}/location`,{method:"POST",body:buildDriverPayload(driverLng,driverLat)});
+    setTripPhase("idle"); setCurrentTrip(null); setPassengerRating(0); setDriverStatus("available");
+  };
 
   const statusColors={offline:C.ink3,available:"#2d9e5f",on_trip:C.olive};
   const statusLabels={offline:lang==="ar"?"غير متصل":"Offline",available:lang==="ar"?"متاح":"Available",on_trip:lang==="ar"?"في رحلة":"On Trip"};
@@ -971,6 +1034,8 @@ export default function App() {
   const [authStep,setAuthStep]=useState(0); // 0=phone, 1=otp, 2=done
   const [currentUser,setCurrentUser]=useState(null); // {name,phone}
   const intervalRef=useRef(null);
+  // Stable guest rider ID (generated once per session, replaced by real phone on sign-in)
+  const guestRiderIdRef=useRef("guest-"+Math.random().toString(36).slice(2,10));
 
   // ── Backend simulation state ──────────────────────────────────
   // Trip store (persists during session)
@@ -1017,9 +1082,19 @@ export default function App() {
   useEffect(()=>{const t=setInterval(()=>setDots(d=>(d+1)%4),500);return()=>clearInterval(t);},[]);
 
   const startBooking=()=>{if(!pickup||!dropoff)return;setScreen("booking");setBookingStep(0);setAppliedPromo(null);};
-  const confirmRide=()=>{
-    matchAndRequest({pickup,dropoff,pickupCoords,dropoffCoords});
-    setBookingStep(1);setTimeout(()=>setBookingStep(2),1800);
+  const confirmRide=async ()=>{
+    const trip=matchAndRequest({pickup,dropoff,pickupCoords,dropoffCoords});
+    setBookingStep(1);
+    // Call the backend to create the ride; fall back gracefully if unavailable
+    if(pickupCoords&&dropoffCoords){
+      const { ok, data } = await apiFetch("/rides",{method:"POST",body:{
+        riderId:currentUser?.phone||guestRiderIdRef.current,
+        pickupLng:pickupCoords.lng, pickupLat:pickupCoords.lat,
+        dropoffLng:dropoffCoords.lng, dropoffLat:dropoffCoords.lat,
+      }});
+      if(ok&&data?.ride?.id) setActiveTripId(data.ride.id);
+    }
+    setTimeout(()=>setBookingStep(2),1800);
   };
   // Distance-based pricing: 0.8$/km base + $3 Wasee service fee
   const calcDistKm=(a,b)=>{
@@ -1045,7 +1120,7 @@ export default function App() {
 
   // Driver portal overlay
   if(showDriverPortal) return (
-    <DriverPortal onBack={()=>setShowDriverPortal(false)} lang={lang}/>
+    <DriverPortal onBack={()=>setShowDriverPortal(false)} lang={lang} pendingRideId={activeTripId}/>
   );
 
   const Nav=()=>(
