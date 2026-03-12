@@ -13,9 +13,17 @@ const app = express();
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 // Allow the React frontend (or any configured origin) to call this API.
 // Set CORS_ORIGIN=* to allow all origins during development/testing only.
-// For production, always set this to your exact frontend URL (e.g. https://wasee.app)
-// to prevent untrusted origins from calling the API.
-const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173';
+// For production, always set this to your exact frontend URL (e.g. https://wasee.app).
+// Comma-separate multiple origins to support both web and mobile clients simultaneously
+// (e.g. CORS_ORIGIN=https://wasee.app,https://driver.wasee.app).
+const corsEnv = process.env.CORS_ORIGIN || 'http://localhost:5173';
+let corsOrigin;
+if (corsEnv === '*') {
+  corsOrigin = '*';
+} else {
+  const origins = corsEnv.split(',').map((o) => o.trim()).filter(Boolean);
+  corsOrigin = origins.length === 1 ? origins[0] : origins;
+}
 app.use(
   cors({
     origin: corsOrigin,

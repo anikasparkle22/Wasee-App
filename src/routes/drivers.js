@@ -7,6 +7,7 @@ const {
   findNearbyDrivers,
   getDriverInfo,
 } = require('../redis');
+const { MAX_FIELD_LENGTH, validateCoordinates, validateId } = require('../utils/validation');
 
 const router = Router();
 
@@ -15,6 +16,10 @@ const router = Router();
 router.post('/:id/location', async (req, res, next) => {
   try {
     const { id } = req.params;
+
+    const idErr = validateId(id, 'driverId');
+    if (idErr) return res.status(400).json({ error: idErr });
+
     const { longitude, latitude, ...meta } = req.body;
 
     if (longitude == null || latitude == null) {
@@ -23,11 +28,16 @@ router.post('/:id/location', async (req, res, next) => {
 
     const lng = parseFloat(longitude);
     const lat = parseFloat(latitude);
-    if (Number.isNaN(lng) || Number.isNaN(lat)) {
-      return res.status(400).json({ error: 'longitude and latitude must be numbers' });
-    }
 
-    await setDriverLocation(id, lng, lat, meta);
+    const coordErr = validateCoordinates(lng, lat);
+    if (coordErr) return res.status(400).json({ error: coordErr });
+
+    // Truncate free-text fields to prevent oversized Redis values
+    const sanitisedMeta = Object.fromEntries(
+      Object.entries(meta).map(([k, v]) => [k, String(v).slice(0, MAX_FIELD_LENGTH)]),
+    );
+
+    await setDriverLocation(id, lng, lat, sanitisedMeta);
     const info = await getDriverInfo(id);
     return res.status(200).json({ message: 'Driver location updated', driver: info });
   } catch (err) {
@@ -60,10 +70,13 @@ router.post('/nearby', async (req, res, next) => {
 
     const lng = parseFloat(longitude);
     const lat = parseFloat(latitude);
-    const radius = radiusKm ? parseFloat(radiusKm) : parseFloat(process.env.MATCH_RADIUS_KM || '5');
+    const radius = radiusKm != null ? parseFloat(radiusKm) : parseFloat(process.env.MATCH_RADIUS_KM || '5');
 
-    if (Number.isNaN(lng) || Number.isNaN(lat) || Number.isNaN(radius)) {
-      return res.status(400).json({ error: 'longitude, latitude, and radiusKm must be numbers' });
+    const coordErr = validateCoordinates(lng, lat);
+    if (coordErr) return res.status(400).json({ error: coordErr });
+
+    if (Number.isNaN(radius) || radius <= 0) {
+      return res.status(400).json({ error: 'radiusKm must be a positive number' });
     }
 
     const drivers = await findNearbyDrivers(lng, lat, radius);

@@ -33,7 +33,7 @@ cp .env.example .env
 | `PORT` | `3000` | HTTP port the server listens on |
 | `REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection string |
 | `MATCH_RADIUS_KM` | `5` | Radius (km) used for automatic driver matching |
-| `CORS_ORIGIN` | `http://localhost:5173` | Allowed browser origin(s). Use `*` to allow all origins during testing |
+| `CORS_ORIGIN` | `http://localhost:5173` | Allowed browser origin(s). Comma-separate multiple values (e.g. `https://app.wasee.com,https://driver.wasee.com`). Use `*` to allow all origins during testing only. |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window in milliseconds (default: 1 minute) |
 | `RATE_LIMIT_MAX` | `100` | Maximum requests per IP per window |
 
@@ -173,3 +173,30 @@ Attempting an invalid transition returns `409 Conflict`.
 # Uses Redis database index 1 (isolated from production data)
 npm test
 ```
+
+---
+
+## Real-world / field testing checklist
+
+Before handing the server to real drivers and riders, complete the following steps:
+
+1. **Set a real Redis URL** – point `REDIS_URL` at a persistent Redis instance (not `127.0.0.1`).  
+   Use Redis AUTH (`redis://:password@host:port`) or a TLS URL (`rediss://`) for security.
+
+2. **Set your frontend URL(s) in `CORS_ORIGIN`** – replace the localhost default with the actual
+   origin(s) of your rider app and driver app:
+   ```
+   CORS_ORIGIN=https://rider.wasee.app,https://driver.wasee.app
+   ```
+
+3. **Tune `MATCH_RADIUS_KM`** – start with `5` for dense urban areas; increase for rural zones.
+
+4. **Run behind HTTPS** – place the server behind a TLS-terminating reverse proxy (nginx, Caddy, or
+   a cloud load-balancer) so that rider and driver locations are never sent in plain text.
+
+5. **Verify the health endpoint** – hit `GET /health` from the device network before your test
+   session to confirm the server is reachable and Redis is connected.
+
+6. **Monitor the pending rides queue** – the `rides:pending` Redis list accumulates ride IDs that
+   have not yet been matched; inspect it with `redis-cli lrange rides:pending 0 -1` during testing
+   to confirm the queue stays clean.
