@@ -9,7 +9,7 @@ const C = {
 
 const TRANSLATIONS = {
   ar: {
-    goodMorning:"صباح الخير", name:"شام الدوس",
+    goodMorning:"صباح الخير", name:"زائر",
     yourLocation:"موقعك في", gps:"GPS",
     dropoffLabel:"الوجهة", dropoffPlaceholder:"وين بدك تروح؟",
     findRide:"دور على رحلة", enterDest:"ادخل الوجهة",
@@ -62,7 +62,7 @@ const TRANSLATIONS = {
     cashNote:"الدفع نقداً للسائق",
   },
   en: {
-    goodMorning:"GOOD MORNING", name:"Sham Aldos",
+    goodMorning:"GOOD MORNING", name:"Guest",
     yourLocation:"Your location in", gps:"GPS",
     dropoffLabel:"DROPOFF", dropoffPlaceholder:"Where to?",
     findRide:"Find a Ride", enterDest:"Enter Destination",
@@ -1451,11 +1451,11 @@ export default function App() {
         )}
         <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:22}}>
           <div style={{width:72,height:72,borderRadius:"50%",background:C.olive,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,fontWeight:800,color:"#fff",flexShrink:0,border:"3px solid #fff",boxShadow:"0 0 0 3px "+C.olive}}>
-            {currentUser?currentUser.name.slice(0,2).toUpperCase():"SA"}
+            {currentUser?currentUser.name.slice(0,2).toUpperCase():"GU"}
           </div>
           <div>
             <div style={{fontSize:24,fontFamily:"'Playfair Display',serif",fontWeight:800}}>{currentUser?currentUser.name:T.name}</div>
-            <div style={{fontSize:13,color:C.ink2}}>{currentUser?"+963 "+currentUser.phone:"sham.aldos@email.com"}</div>
+            <div style={{fontSize:13,color:C.ink2}}>{currentUser?"+963 "+currentUser.phone:(lang==="ar"?"سجّل الدخول للمتابعة":"Sign in to continue")}</div>
             <div style={{fontSize:12,color:C.olive,marginTop:3,fontFamily:"'DM Mono',monospace",fontWeight:700}}>⭐ 4.94 · {lang==="ar"?"دمشق":"Damascus"}</div>
           </div>
         </div>
