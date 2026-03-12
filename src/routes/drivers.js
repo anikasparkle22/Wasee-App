@@ -7,6 +7,7 @@ const {
   findNearbyDrivers,
   getDriverInfo,
 } = require('../redis');
+const { validateCoordinates, validateId, sanitizeFields } = require('../utils/validation');
 
 const router = Router();
 
@@ -14,21 +15,16 @@ const router = Router();
 // Body: { longitude, latitude, name?, vehicle? }
 router.post('/:id/location', async (req, res, next) => {
   try {
-    const { id } = req.params;
+    const idResult = validateId(req.params.id);
+    if (idResult.error) return res.status(400).json({ error: idResult.error });
+
     const { longitude, latitude, ...meta } = req.body;
+    const coordResult = validateCoordinates(longitude, latitude);
+    if (coordResult.error) return res.status(400).json({ error: coordResult.error });
+    const { lng, lat } = coordResult;
 
-    if (longitude == null || latitude == null) {
-      return res.status(400).json({ error: 'longitude and latitude are required' });
-    }
-
-    const lng = parseFloat(longitude);
-    const lat = parseFloat(latitude);
-    if (Number.isNaN(lng) || Number.isNaN(lat)) {
-      return res.status(400).json({ error: 'longitude and latitude must be numbers' });
-    }
-
-    await setDriverLocation(id, lng, lat, meta);
-    const info = await getDriverInfo(id);
+    await setDriverLocation(idResult.id, lng, lat, sanitizeFields(meta));
+    const info = await getDriverInfo(idResult.id);
     return res.status(200).json({ message: 'Driver location updated', driver: info });
   } catch (err) {
     return next(err);
@@ -39,8 +35,10 @@ router.post('/:id/location', async (req, res, next) => {
 // Remove driver from the available pool
 router.delete('/:id/location', async (req, res, next) => {
   try {
-    const { id } = req.params;
-    await removeDriverLocation(id);
+    const idResult = validateId(req.params.id);
+    if (idResult.error) return res.status(400).json({ error: idResult.error });
+
+    await removeDriverLocation(idResult.id);
     return res.status(200).json({ message: 'Driver marked unavailable' });
   } catch (err) {
     return next(err);
@@ -54,16 +52,16 @@ router.post('/nearby', async (req, res, next) => {
   try {
     const { longitude, latitude, radiusKm } = req.body;
 
-    if (longitude == null || latitude == null) {
-      return res.status(400).json({ error: 'longitude and latitude are required' });
-    }
+    const coordResult = validateCoordinates(longitude, latitude);
+    if (coordResult.error) return res.status(400).json({ error: coordResult.error });
+    const { lng, lat } = coordResult;
 
-    const lng = parseFloat(longitude);
-    const lat = parseFloat(latitude);
-    const radius = radiusKm ? parseFloat(radiusKm) : parseFloat(process.env.MATCH_RADIUS_KM || '5');
+    const radius = radiusKm != null
+      ? parseFloat(radiusKm)
+      : parseFloat(process.env.MATCH_RADIUS_KM || '5');
 
-    if (Number.isNaN(lng) || Number.isNaN(lat) || Number.isNaN(radius)) {
-      return res.status(400).json({ error: 'longitude, latitude, and radiusKm must be numbers' });
+    if (Number.isNaN(radius) || radius <= 0) {
+      return res.status(400).json({ error: 'radiusKm must be a positive number' });
     }
 
     const drivers = await findNearbyDrivers(lng, lat, radius);
@@ -76,7 +74,10 @@ router.post('/nearby', async (req, res, next) => {
 // ─── GET /drivers/:id ─────────────────────────────────────────────────────────
 router.get('/:id', async (req, res, next) => {
   try {
-    const info = await getDriverInfo(req.params.id);
+    const idResult = validateId(req.params.id);
+    if (idResult.error) return res.status(400).json({ error: idResult.error });
+
+    const info = await getDriverInfo(idResult.id);
     if (!info) return res.status(404).json({ error: 'Driver not found' });
     return res.status(200).json(info);
   } catch (err) {

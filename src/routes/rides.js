@@ -8,9 +8,11 @@ const {
   updateRide,
   findNearbyDrivers,
   removeDriverLocation,
+  removePendingRide,
   setDriverLocation,
   getDriverInfo,
 } = require('../redis');
+const { validateCoordinates, validateId, sanitizeFields } = require('../utils/validation');
 
 const router = Router();
 
@@ -21,27 +23,31 @@ router.post('/', async (req, res, next) => {
   try {
     const { riderId, pickupLng, pickupLat, dropoffLng, dropoffLat } = req.body;
 
-    if (!riderId || pickupLng == null || pickupLat == null || dropoffLng == null || dropoffLat == null) {
+    const riderIdResult = validateId(String(riderId ?? ''));
+    if (riderIdResult.error) {
       return res.status(400).json({
         error: 'riderId, pickupLng, pickupLat, dropoffLng and dropoffLat are required',
       });
     }
 
-    const pLng = parseFloat(pickupLng);
-    const pLat = parseFloat(pickupLat);
-    const dLng = parseFloat(dropoffLng);
-    const dLat = parseFloat(dropoffLat);
-
-    if ([pLng, pLat, dLng, dLat].some(Number.isNaN)) {
-      return res.status(400).json({ error: 'Coordinates must be numbers' });
+    const pickupResult = validateCoordinates(pickupLng, pickupLat);
+    if (pickupResult.error) {
+      return res.status(400).json({ error: pickupResult.error });
     }
+    const dropoffResult = validateCoordinates(dropoffLng, dropoffLat);
+    if (dropoffResult.error) {
+      return res.status(400).json({ error: dropoffResult.error });
+    }
+
+    const { lng: pLng, lat: pLat } = pickupResult;
+    const { lng: dLng, lat: dLat } = dropoffResult;
 
     const radiusKm = parseFloat(process.env.MATCH_RADIUS_KM || '5');
     const nearby = await findNearbyDrivers(pLng, pLat, radiusKm);
 
     const rideId = uuidv4();
     const fields = {
-      riderId,
+      riderId: riderIdResult.id,
       pickupLng: pLng,
       pickupLat: pLat,
       dropoffLng: dLng,
@@ -96,8 +102,13 @@ router.put('/:id/accept', async (req, res, next) => {
     const { driverId } = req.body;
     if (!driverId) return res.status(400).json({ error: 'driverId is required' });
 
-    await updateRide(req.params.id, { driverId, status: 'matched' });
-    await removeDriverLocation(driverId);
+    const driverIdResult = validateId(String(driverId));
+    if (driverIdResult.error) return res.status(400).json({ error: driverIdResult.error });
+
+    await updateRide(req.params.id, { driverId: driverIdResult.id, status: 'matched' });
+    await removeDriverLocation(driverIdResult.id);
+    // Remove from pending queue now that it has been accepted
+    await removePendingRide(req.params.id);
     const updated = await getRide(req.params.id);
     return res.status(200).json({ ride: updated });
   } catch (err) {
