@@ -107,6 +107,19 @@ router.put('/:id/accept', async (req, res, next) => {
 
 // ─── PUT /rides/:id/status ────────────────────────────────────────────────────
 // Body: { status }   values: pickup | in_progress | completed | cancelled
+//
+// Valid transitions (state machine):
+//   matched    → pickup | cancelled
+//   pickup     → in_progress | cancelled
+//   in_progress → completed | cancelled
+//
+// Terminal states (completed, cancelled) cannot be changed.
+const VALID_TRANSITIONS = {
+  matched: ['pickup', 'cancelled'],
+  pickup: ['in_progress', 'cancelled'],
+  in_progress: ['completed', 'cancelled'],
+};
+
 router.put('/:id/status', async (req, res, next) => {
   try {
     const ride = await getRide(req.params.id);
@@ -117,6 +130,16 @@ router.put('/:id/status', async (req, res, next) => {
 
     if (!status || !ALLOWED.includes(status)) {
       return res.status(400).json({ error: `status must be one of: ${ALLOWED.join(', ')}` });
+    }
+
+    const allowed = VALID_TRANSITIONS[ride.status];
+    if (!allowed) {
+      return res.status(409).json({ error: `Ride is already ${ride.status} and cannot be updated` });
+    }
+    if (!allowed.includes(status)) {
+      return res
+        .status(409)
+        .json({ error: `Cannot transition from '${ride.status}' to '${status}'. Allowed: ${allowed.join(', ')}` });
     }
 
     await updateRide(req.params.id, { status });

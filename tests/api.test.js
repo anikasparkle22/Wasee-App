@@ -14,6 +14,7 @@
 process.env.NODE_ENV = 'test';
 process.env.REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379/1';
 process.env.MATCH_RADIUS_KM = '50'; // generous radius for tests
+process.env.CORS_ORIGIN = 'http://localhost:5173'; // test CORS origin
 
 const request = require('supertest');
 const app = require('../src/app');
@@ -144,19 +145,27 @@ describe('Ride endpoints', () => {
     expect(res.status).toBe(404);
   });
 
-  it('PUT /rides/:id/status – updates to in_progress', async () => {
+  it('PUT /rides/:id/status – transitions matched → pickup', async () => {
+    const res = await request(app)
+      .put(`/rides/${rideId}/status`)
+      .send({ status: 'pickup' });
+    expect(res.status).toBe(200);
+    expect(res.body.ride.status).toBe('pickup');
+  });
+
+  it('PUT /rides/:id/status – 400 for invalid status value', async () => {
+    const res = await request(app)
+      .put(`/rides/${rideId}/status`)
+      .send({ status: 'flying' });
+    expect(res.status).toBe(400);
+  });
+
+  it('PUT /rides/:id/status – transitions pickup → in_progress', async () => {
     const res = await request(app)
       .put(`/rides/${rideId}/status`)
       .send({ status: 'in_progress' });
     expect(res.status).toBe(200);
     expect(res.body.ride.status).toBe('in_progress');
-  });
-
-  it('PUT /rides/:id/status – 400 for invalid status', async () => {
-    const res = await request(app)
-      .put(`/rides/${rideId}/status`)
-      .send({ status: 'flying' });
-    expect(res.status).toBe(400);
   });
 
   it('PUT /rides/:id/status – completes the ride and restores driver', async () => {
@@ -246,5 +255,91 @@ describe('Unknown routes', () => {
   it('returns 404', async () => {
     const res = await request(app).get('/no-such-route');
     expect(res.status).toBe(404);
+  });
+});
+
+// ─── CORS ────────────────────────────────────────────────────────────────────
+describe('CORS headers', () => {
+  it('returns Access-Control-Allow-Origin for allowed origin', async () => {
+    const res = await request(app)
+      .get('/health')
+      .set('Origin', 'http://localhost:5173');
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+  });
+
+  it('responds to preflight OPTIONS request', async () => {
+    const res = await request(app)
+      .options('/rides')
+      .set('Origin', 'http://localhost:5173')
+      .set('Access-Control-Request-Method', 'POST');
+    expect(res.status).toBe(204);
+  });
+});
+
+// ─── Ride status state machine ────────────────────────────────────────────────
+describe('Ride status state-machine transitions', () => {
+  const driverId = 'driver-sm-001';
+  let rideId;
+
+  beforeAll(async () => {
+    await request(app)
+      .post(`/drivers/${driverId}/location`)
+      .send({ longitude: 36.3, latitude: 33.5, name: 'SM Driver', vehicle: 'Sedan' });
+
+    const res = await request(app).post('/rides').send({
+      riderId: 'rider-sm-001',
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    rideId = res.body.ride.id;
+    // Ride should be auto-matched
+    expect(res.body.ride.status).toBe('matched');
+  });
+
+  it('409 when jumping from matched directly to in_progress', async () => {
+    const res = await request(app)
+      .put(`/rides/${rideId}/status`)
+      .send({ status: 'in_progress' });
+    expect(res.status).toBe(409);
+  });
+
+  it('200 matched → pickup', async () => {
+    const res = await request(app)
+      .put(`/rides/${rideId}/status`)
+      .send({ status: 'pickup' });
+    expect(res.status).toBe(200);
+    expect(res.body.ride.status).toBe('pickup');
+  });
+
+  it('409 when jumping from pickup directly to completed', async () => {
+    const res = await request(app)
+      .put(`/rides/${rideId}/status`)
+      .send({ status: 'completed' });
+    expect(res.status).toBe(409);
+  });
+
+  it('200 pickup → in_progress', async () => {
+    const res = await request(app)
+      .put(`/rides/${rideId}/status`)
+      .send({ status: 'in_progress' });
+    expect(res.status).toBe(200);
+    expect(res.body.ride.status).toBe('in_progress');
+  });
+
+  it('200 in_progress → completed', async () => {
+    const res = await request(app)
+      .put(`/rides/${rideId}/status`)
+      .send({ status: 'completed' });
+    expect(res.status).toBe(200);
+    expect(res.body.ride.status).toBe('completed');
+  });
+
+  it('409 when updating a terminal (completed) ride', async () => {
+    const res = await request(app)
+      .put(`/rides/${rideId}/status`)
+      .send({ status: 'cancelled' });
+    expect(res.status).toBe(409);
   });
 });

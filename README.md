@@ -33,6 +33,9 @@ cp .env.example .env
 | `PORT` | `3000` | HTTP port the server listens on |
 | `REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection string |
 | `MATCH_RADIUS_KM` | `5` | Radius (km) used for automatic driver matching |
+| `CORS_ORIGIN` | `http://localhost:5173` | Allowed browser origin(s). Use `*` to allow all origins during testing |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window in milliseconds (default: 1 minute) |
+| `RATE_LIMIT_MAX` | `100` | Maximum requests per IP per window |
 
 ### 3 – Start Redis
 
@@ -138,6 +141,18 @@ Response `status` is `matched` when a driver was found, or `pending` when none a
 
 Allowed values: `pickup` → `in_progress` → `completed` | `cancelled`.  
 When a ride is `completed` or `cancelled` the driver is automatically returned to the available pool.
+
+**Valid state transitions:**
+
+| Current status | Allowed next statuses |
+|---|---|
+| `matched` | `pickup`, `cancelled` |
+| `pickup` | `in_progress`, `cancelled` |
+| `in_progress` | `completed`, `cancelled` |
+| `completed` | *(terminal – no further updates)* |
+| `cancelled` | *(terminal – no further updates)* |
+
+Attempting an invalid transition returns `409 Conflict`.
 
 ---
 
