@@ -45,7 +45,7 @@ router.post('/', async (req, res, next) => {
     const { lng: pLng, lat: pLat } = pickupResult;
     const { lng: dLng, lat: dLat } = dropoffResult;
 
-    // ── Compute distance and fare (SYR pricing: $1 start + $1.50/km) ──────────
+    // ── Compute distance and fare (SYP pricing: $1 start + $1.50/km) ──────────
     const R = 6371;
     const dLatR = (dLat - pLat) * (Math.PI / 180);
     const dLngR = (dLng - pLng) * (Math.PI / 180);
@@ -196,7 +196,8 @@ router.put('/:id/status', async (req, res, next) => {
           pickupLat: ride.pickupLat,
           dropoffLng: ride.dropoffLng,
           dropoffLat: ride.dropoffLat,
-          fare: ride.fare,
+          fareUSD: ride.fareUSD,
+          fareSYP: ride.fareSYP,
           distanceKm: ride.distanceKm,
           completedAt: new Date().toISOString(),
         };

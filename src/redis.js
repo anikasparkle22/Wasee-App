@@ -152,14 +152,14 @@ async function updateRide(rideId, fields) {
 
 /**
  * Record a new rating for a driver and atomically recompute their average.
- * Uses Redis HINCRBYFLOAT so concurrent updates are safe.
+ * Uses HINCRBY (integer count) and HINCRBYFLOAT (float sum) for atomic updates.
  * @param {string} driverId
  * @param {number} newRating – integer 1–5
  * @returns {{ avgRating: number, count: number }}
  */
 async function updateDriverRating(driverId, newRating) {
   const key = driverKey(driverId);
-  const count = parseFloat(await client.hincrbyfloat(key, 'ratingCount', 1));
+  const count = await client.hincrby(key, 'ratingCount', 1);
   const sum = parseFloat(await client.hincrbyfloat(key, 'ratingSum', newRating));
   const avg = sum / count;
   await client.hset(key, 'avgRating', avg.toFixed(2), 'updatedAt', new Date().toISOString());

@@ -1001,7 +1001,7 @@ function DriverPortal({ onBack, lang, pendingRideId }) {
                   </div>
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:14,fontWeight:700,color:"#2d9e5f"}}>+${h.fare}</div>
-                    <div style={{fontSize:11,color:C.ink3}}>{h.syp?Math.round(h.syp).toLocaleString()+" ل.س":""}</div>
+                    <div style={{fontSize:11,color:C.ink3}}>{h.fare?fmtSYP(h.fare):""}</div>
                   </div>
                 </div>
               ))}
@@ -1524,7 +1524,7 @@ export default function App() {
           <div style={lbl({marginBottom:8})}>{T.chooseRide}</div>
           <div style={{display:"flex",gap:8,marginBottom:14,overflowX:"auto",scrollbarWidth:"none",paddingBottom:4}}>
             {RIDES.map(r=>{
-              const rp=computePrice();const rUsd=(rp.total*r.multiplier/( selectedRide?.multiplier||1));
+              const rp=computePrice();
               return(
                 <button key={r.id} onClick={()=>setSelectedRide(r)}
                   style={{flexShrink:0,minWidth:110,...card({padding:"12px 10px",cursor:"pointer",border:"1.5px solid "+(selectedRide?.id===r.id?C.olive:C.border),background:selectedRide?.id===r.id?C.oliveBg:C.surface,textAlign:"center"})}}>
@@ -1577,7 +1577,7 @@ export default function App() {
                     <span style={{fontSize:11,color:"#2d9e5f",fontFamily:"'DM Mono',monospace",fontWeight:700}}>✓ {T.done}</span>
                     <div style={{textAlign:"right"}}>
                       <span style={{fontSize:15,fontWeight:800,color:C.ink}}>${t.fare?.toFixed(2)||"—"}</span>
-                      <div style={{fontSize:11,color:C.olive,fontWeight:700}}>{t.syp?Math.round(t.syp).toLocaleString()+" ل.س":""}</div>
+                      <div style={{fontSize:11,color:C.olive,fontWeight:700}}>{t.syp?fmtSYP(t.fare):(t.fare?fmtSYP(t.fare):"")}</div>
                     </div>
                   </div>
                 </div>
