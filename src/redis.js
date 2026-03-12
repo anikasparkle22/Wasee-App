@@ -102,17 +102,32 @@ async function getDriverInfo(driverId) {
 
 /**
  * Persist a new ride request.
+ * Only adds the ride to the pending queue when its effective status is 'pending';
+ * auto-matched rides (status = 'matched') must NOT appear in that queue.
  * @param {string} rideId
  * @param {object} fields
  */
 async function createRide(rideId, fields) {
-  await client.hset(rideKey(rideId), {
+  const rideFields = {
     id: rideId,
     status: 'pending',
     createdAt: new Date().toISOString(),
+    // Caller-supplied fields are spread last so they can override defaults (e.g.
+    // status: 'matched' for auto-matched rides, which must NOT enter the pending queue).
     ...Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v)])),
-  });
-  await client.lpush(PENDING_RIDES_KEY, rideId);
+  };
+  await client.hset(rideKey(rideId), rideFields);
+  if (rideFields.status === 'pending') {
+    await client.lpush(PENDING_RIDES_KEY, rideId);
+  }
+}
+
+/**
+ * Remove a ride ID from the pending queue (called when a driver accepts the ride).
+ * @param {string} rideId
+ */
+async function removePendingRide(rideId) {
+  await client.lrem(PENDING_RIDES_KEY, 0, rideId);
 }
 
 /**
@@ -150,4 +165,5 @@ module.exports = {
   createRide,
   getRide,
   updateRide,
+  removePendingRide,
 };

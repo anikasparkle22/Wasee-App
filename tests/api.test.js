@@ -69,6 +69,22 @@ describe('Driver endpoints', () => {
     expect(res.status).toBe(400);
   });
 
+  it('POST /drivers/:id/location – 400 for out-of-range longitude', async () => {
+    const res = await request(app)
+      .post(`/drivers/${driverId}/location`)
+      .send({ longitude: 200, latitude: 33.5 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/longitude/i);
+  });
+
+  it('POST /drivers/:id/location – 400 for out-of-range latitude', async () => {
+    const res = await request(app)
+      .post(`/drivers/${driverId}/location`)
+      .send({ longitude: 36.3, latitude: 95 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/latitude/i);
+  });
+
   it('GET /drivers/nearby – finds the registered driver', async () => {
     const res = await request(app)
       .post('/drivers/nearby')
@@ -76,6 +92,14 @@ describe('Driver endpoints', () => {
     expect(res.status).toBe(200);
     expect(res.body.drivers.length).toBeGreaterThan(0);
     expect(res.body.drivers[0].driverId).toBe(driverId);
+  });
+
+  it('POST /drivers/nearby – 400 for negative radiusKm', async () => {
+    const res = await request(app)
+      .post('/drivers/nearby')
+      .send({ longitude: 36.3, latitude: 33.5, radiusKm: -1 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/radiusKm/i);
   });
 
   it('GET /drivers/:id – returns driver info', async () => {
@@ -132,6 +156,30 @@ describe('Ride endpoints', () => {
   it('POST /rides – 400 when required fields missing', async () => {
     const res = await request(app).post('/rides').send({ riderId: 'rider-002' });
     expect(res.status).toBe(400);
+  });
+
+  it('POST /rides – 400 for out-of-range pickup longitude', async () => {
+    const res = await request(app).post('/rides').send({
+      riderId: 'rider-002',
+      pickupLng: -200,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/longitude/i);
+  });
+
+  it('POST /rides – 400 for out-of-range dropoff latitude', async () => {
+    const res = await request(app).post('/rides').send({
+      riderId: 'rider-002',
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: -100,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/latitude/i);
   });
 
   it('GET /rides/:id – returns the ride', async () => {
@@ -341,5 +389,74 @@ describe('Ride status state-machine transitions', () => {
       .put(`/rides/${rideId}/status`)
       .send({ status: 'cancelled' });
     expect(res.status).toBe(409);
+  });
+});
+
+// ─── Pending rides queue correctness ──────────────────────────────────────────
+describe('rides:pending queue', () => {
+  const queueDriver = 'driver-queue-001';
+  const PENDING_KEY = 'rides:pending';
+
+  beforeAll(async () => {
+    await redis.del(PENDING_KEY);
+    // Register a driver so we can test auto-match
+    await request(app)
+      .post(`/drivers/${queueDriver}/location`)
+      .send({ longitude: 36.3, latitude: 33.5, name: 'Queue Driver', vehicle: 'Sedan' });
+  });
+
+  it('auto-matched ride is NOT added to the pending queue', async () => {
+    const res = await request(app).post('/rides').send({
+      riderId: 'rider-queue-001',
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.ride.status).toBe('matched');
+
+    const queue = await redis.lrange(PENDING_KEY, 0, -1);
+    expect(queue).not.toContain(res.body.ride.id);
+  });
+
+  it('unmatched ride IS added to the pending queue', async () => {
+    await redis.del('geo:drivers:available');
+    const res = await request(app).post('/rides').send({
+      riderId: 'rider-queue-002',
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.ride.status).toBe('pending');
+
+    const queue = await redis.lrange(PENDING_KEY, 0, -1);
+    expect(queue).toContain(res.body.ride.id);
+  });
+
+  it('accepted ride is removed from the pending queue', async () => {
+    await redis.del('geo:drivers:available');
+    const created = await request(app).post('/rides').send({
+      riderId: 'rider-queue-003',
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    const pendingId = created.body.ride.id;
+    // Confirm it is in the queue
+    let queue = await redis.lrange(PENDING_KEY, 0, -1);
+    expect(queue).toContain(pendingId);
+
+    // Driver accepts the ride
+    await request(app)
+      .put(`/rides/${pendingId}/accept`)
+      .send({ driverId: 'driver-queue-accept-001' });
+
+    // Should no longer be in the queue
+    queue = await redis.lrange(PENDING_KEY, 0, -1);
+    expect(queue).not.toContain(pendingId);
   });
 });
