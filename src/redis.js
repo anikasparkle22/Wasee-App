@@ -150,6 +150,68 @@ async function updateRide(rideId, fields) {
   });
 }
 
+/**
+ * Record a new rating for a driver and atomically recompute their average.
+ * Uses HINCRBY (integer count) and HINCRBYFLOAT (float sum) for atomic updates.
+ * @param {string} driverId
+ * @param {number} newRating – integer 1–5
+ * @returns {{ avgRating: number, count: number }}
+ */
+async function updateDriverRating(driverId, newRating) {
+  const key = driverKey(driverId);
+  const count = await client.hincrby(key, 'ratingCount', 1);
+  const sum = parseFloat(await client.hincrbyfloat(key, 'ratingSum', newRating));
+  const avg = sum / count;
+  await client.hset(key, 'avgRating', avg.toFixed(2), 'updatedAt', new Date().toISOString());
+  return { avgRating: parseFloat(avg.toFixed(2)), count };
+}
+
+/**
+ * Append a completed trip record to a driver's trip list (capped at 100 entries).
+ * @param {string} driverId
+ * @param {object} tripData  – { rideId, from, to, fare, dist, completedAt, ... }
+ */
+async function addDriverTrip(driverId, tripData) {
+  const listKey = `driver:${driverId}:trips`;
+  await client.lpush(listKey, JSON.stringify({ ...tripData, savedAt: new Date().toISOString() }));
+  await client.ltrim(listKey, 0, 99); // keep last 100 trips
+}
+
+/**
+ * Retrieve recent completed trips for a driver (newest first).
+ * @param {string} driverId
+ * @param {number} limit
+ * @returns {object[]}
+ */
+async function getDriverTrips(driverId, limit = 20) {
+  const listKey = `driver:${driverId}:trips`;
+  const raw = await client.lrange(listKey, 0, limit - 1);
+  return raw.map((s) => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean);
+}
+
+/**
+ * Append a completed trip record to a rider's trip history (capped at 200 entries).
+ * @param {string} riderId
+ * @param {object} tripData
+ */
+async function addRiderTrip(riderId, tripData) {
+  const listKey = `rider:${riderId}:trips`;
+  await client.lpush(listKey, JSON.stringify({ ...tripData, savedAt: new Date().toISOString() }));
+  await client.ltrim(listKey, 0, 199);
+}
+
+/**
+ * Retrieve recent completed trips for a rider (newest first).
+ * @param {string} riderId
+ * @param {number} limit
+ * @returns {object[]}
+ */
+async function getRiderTrips(riderId, limit = 20) {
+  const listKey = `rider:${riderId}:trips`;
+  const raw = await client.lrange(listKey, 0, limit - 1);
+  return raw.map((s) => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean);
+}
+
 module.exports = {
   client,
   GEO_KEY,
@@ -164,4 +226,9 @@ module.exports = {
   getRide,
   updateRide,
   removePendingRide,
+  updateDriverRating,
+  addDriverTrip,
+  getDriverTrips,
+  addRiderTrip,
+  getRiderTrips,
 };

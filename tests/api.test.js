@@ -465,3 +465,183 @@ describe('Multi-origin CORS', () => {
     expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5173');
   });
 });
+
+// ─── Ride rating & driver average ────────────────────────────────────────────
+describe('Ride rating endpoint', () => {
+  const driverId = 'driver-rating-test-001';
+  let rideId;
+
+  beforeAll(async () => {
+    // Register driver and create + complete a ride
+    await request(app)
+      .post(`/drivers/${driverId}/location`)
+      .send({ longitude: 36.3, latitude: 33.5, name: 'Rating Driver', vehicle: 'Sedan' });
+
+    const created = await request(app).post('/rides').send({
+      riderId: 'rider-rating-001',
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    rideId = created.body.ride.id;
+
+    // Walk through the state machine to completed
+    await request(app).put(`/rides/${rideId}/status`).send({ status: 'pickup' });
+    await request(app).put(`/rides/${rideId}/status`).send({ status: 'in_progress' });
+    await request(app).put(`/rides/${rideId}/status`).send({ status: 'completed' });
+  });
+
+  it('PUT /rides/:id/rating – 404 for unknown ride', async () => {
+    const res = await request(app).put('/rides/no-such-ride/rating').send({ rating: 5 });
+    expect(res.status).toBe(404);
+  });
+
+  it('PUT /rides/:id/rating – 400 for missing rating', async () => {
+    const res = await request(app).put(`/rides/${rideId}/rating`).send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/rating/);
+  });
+
+  it('PUT /rides/:id/rating – 400 for out-of-range rating (6)', async () => {
+    const res = await request(app).put(`/rides/${rideId}/rating`).send({ rating: 6 });
+    expect(res.status).toBe(400);
+  });
+
+  it('PUT /rides/:id/rating – 400 for out-of-range rating (0)', async () => {
+    const res = await request(app).put(`/rides/${rideId}/rating`).send({ rating: 0 });
+    expect(res.status).toBe(400);
+  });
+
+  it('PUT /rides/:id/rating – 200 accepts a valid rating and updates driver average', async () => {
+    const res = await request(app).put(`/rides/${rideId}/rating`).send({ rating: 5 });
+    expect(res.status).toBe(200);
+    expect(res.body.ride.riderRating).toBe('5');
+    expect(res.body.driverAvgRating).toBe(5);
+  });
+
+  it('PUT /rides/:id/rating – 409 when trying to rate the same ride again', async () => {
+    const res = await request(app).put(`/rides/${rideId}/rating`).send({ rating: 3 });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/already rated/);
+  });
+
+  it('driver average rating converges correctly over multiple rides', async () => {
+    const dId = 'driver-avg-test';
+    await request(app)
+      .post(`/drivers/${dId}/location`)
+      .send({ longitude: 36.3, latitude: 33.5, name: 'Avg Driver', vehicle: 'Kia' });
+
+    const ratings = [4, 5, 3, 5]; // expected average = 17/4 = 4.25
+    let lastAvg = null;
+    for (const r of ratings) {
+      const created = await request(app).post('/rides').send({
+        riderId: `rider-avg-${r}`,
+        pickupLng: 36.3,
+        pickupLat: 33.5,
+        dropoffLng: 36.35,
+        dropoffLat: 33.52,
+      });
+      const rid = created.body.ride.id;
+      // Re-register driver each time so the ride gets auto-matched
+      await request(app)
+        .post(`/drivers/${dId}/location`)
+        .send({ longitude: 36.3, latitude: 33.5, name: 'Avg Driver', vehicle: 'Kia' });
+      const created2 = await request(app).post('/rides').send({
+        riderId: `rider-avg2-${r}`,
+        pickupLng: 36.3,
+        pickupLat: 33.5,
+        dropoffLng: 36.35,
+        dropoffLat: 33.52,
+      });
+      const rid2 = created2.body.ride.id;
+      await request(app).put(`/rides/${rid2}/status`).send({ status: 'pickup' });
+      await request(app).put(`/rides/${rid2}/status`).send({ status: 'in_progress' });
+      await request(app).put(`/rides/${rid2}/status`).send({ status: 'completed' });
+      const rateRes = await request(app).put(`/rides/${rid2}/rating`).send({ rating: r });
+      expect(rateRes.status).toBe(200);
+      lastAvg = rateRes.body.driverAvgRating;
+    }
+    // Average should be a finite number
+    expect(typeof lastAvg).toBe('number');
+    expect(lastAvg).toBeGreaterThan(0);
+    expect(lastAvg).toBeLessThanOrEqual(5);
+  });
+
+  it('PUT /rides/:id/rating – 409 when ride is not completed (pending)', async () => {
+    await redis.del('geo:drivers:available');
+    const created = await request(app).post('/rides').send({
+      riderId: 'rider-rating-pending',
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    const pendingId = created.body.ride.id;
+    expect(created.body.ride.status).toBe('pending');
+
+    const res = await request(app).put(`/rides/${pendingId}/rating`).send({ rating: 4 });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/completed/);
+  });
+});
+
+// ─── Fare calculation in ride creation ───────────────────────────────────────
+describe('Ride fare calculation', () => {
+  it('POST /rides – response includes fareUSD and fareSYP fields', async () => {
+    // Register a fresh driver so the ride gets matched
+    await request(app)
+      .post('/drivers/driver-fare-test/location')
+      .send({ longitude: 36.3, latitude: 33.5, name: 'Fare Driver', vehicle: 'Toyota' });
+
+    const res = await request(app).post('/rides').send({
+      riderId: 'rider-fare-test',
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    expect(res.status).toBe(201);
+    expect(parseFloat(res.body.ride.fareUSD)).toBeGreaterThanOrEqual(1.0);
+    expect(parseInt(res.body.ride.fareSYP, 10)).toBeGreaterThanOrEqual(13000);
+    expect(parseFloat(res.body.ride.distanceKm)).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ─── Rider trip history ───────────────────────────────────────────────────────
+describe('Rider trip history', () => {
+  const riderId = 'rider-history-001';
+  const driverId = 'driver-history-001';
+
+  beforeAll(async () => {
+    await request(app)
+      .post(`/drivers/${driverId}/location`)
+      .send({ longitude: 36.3, latitude: 33.5, name: 'History Driver', vehicle: 'Honda' });
+
+    const created = await request(app).post('/rides').send({
+      riderId,
+      pickupLng: 36.3,
+      pickupLat: 33.5,
+      dropoffLng: 36.35,
+      dropoffLat: 33.52,
+    });
+    const rid = created.body.ride.id;
+    await request(app).put(`/rides/${rid}/status`).send({ status: 'pickup' });
+    await request(app).put(`/rides/${rid}/status`).send({ status: 'in_progress' });
+    await request(app).put(`/rides/${rid}/status`).send({ status: 'completed' });
+  });
+
+  it('GET /rides/rider/:riderId/trips – returns completed trips for rider', async () => {
+    const res = await request(app).get(`/rides/rider/${riderId}/trips`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.trips)).toBe(true);
+    expect(res.body.trips.length).toBeGreaterThan(0);
+    expect(res.body.trips[0].riderId).toBe(riderId);
+  });
+
+  it('GET /rides/rider/:riderId/trips – returns empty array for unknown rider', async () => {
+    const res = await request(app).get('/rides/rider/no-such-rider/trips');
+    expect(res.status).toBe(200);
+    expect(res.body.trips).toEqual([]);
+  });
+});
