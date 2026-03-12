@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Wasee",
+    "slug": "wasee-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#F2F0EB"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Wasee uses your location to find nearby drivers and show your position on the map.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Wasee uses your location to find nearby drivers."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#F2F0EB"
+      },
+      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION"]
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Wasee uses your location to find nearby drivers."
+        }
+      ]
+    ]
+  }
+}
