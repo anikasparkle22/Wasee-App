@@ -134,15 +134,22 @@ const TRANSLATIONS = {
 };
 
 // ─── SYSTEM: Distance-based pricing ──────────────────────────────────────────
+// Pricing model: $1 USD base + $1.50 USD per km (≈ $1–2/km range as specified).
+// Displayed in both USD and Syrian Pounds (SYP).  1 USD ≈ 13 000 SYP.
+const SYP_RATE = 13000;
+const fmtSYP = (usdAmt) => Math.round(usdAmt * SYP_RATE).toLocaleString() + " ل.س";
+
 function haversineKm(a, b) {
   const R=6371, dLat=(b.lat-a.lat)*Math.PI/180, dLng=(b.lng-a.lng)*Math.PI/180;
   const s=Math.sin(dLat/2)**2+Math.cos(a.lat*Math.PI/180)*Math.cos(b.lat*Math.PI/180)*Math.sin(dLng/2)**2;
   return R*2*Math.atan2(Math.sqrt(s),Math.sqrt(1-s));
 }
+// $1 USD base + $1.50/km (surge applied to per-km rate only)
 function calcFare(fromCoords, toCoords, surge=1.0) {
   const km = haversineKm(fromCoords, toCoords);
-  const base=1.50, perKm=0.55, fare=Math.max(2.00, base + perKm*km) * surge;
-  return { km: km.toFixed(1), fare: fare.toFixed(2), fareMin:(fare*0.9).toFixed(2), fareMax:(fare*1.1).toFixed(2) };
+  const usd = Math.max(1.00, 1.00 + 1.50 * km * surge);
+  const syp = Math.round(usd * SYP_RATE);
+  return { km: km.toFixed(1), fare: usd.toFixed(2), syp, fareMin:(usd*0.9).toFixed(2), fareMax:(usd*1.1).toFixed(2) };
 }
 function findNearestDriver(fromCoords, city) {
   const pool = DRIVERS.map((d,i)=>{
@@ -224,8 +231,12 @@ const card  = (x={}) => ({ background:C.surface, borderRadius:16, border:"1px so
 const lbl   = (x={}) => ({ fontSize:10, fontWeight:700, letterSpacing:"0.1em", color:C.ink3, fontFamily:"'DM Mono',monospace", textTransform:"uppercase", ...x });
 const pill  = (a,x={}) => ({ background:a?C.olive:C.surface, color:a?"#fff":C.ink2, border:"1px solid "+(a?C.olive:C.border), borderRadius:999, padding:"9px 22px", fontSize:14, fontWeight:600, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", boxShadow:a?"0 2px 8px rgba(139,125,94,0.25)":"none", ...x });
 
-function LeafletMap({ height=220, lat=33.5138, lng=36.2765, zoom=12, markerA=null, markerB=null, rounded=true, badge=true, driverMarkers=[] }) {
+function LeafletMap({ height=220, lat=33.5138, lng=36.2765, zoom=12, markerA=null, markerB=null, rounded=true, badge=true, driverMarkers=[], onMapClick=null }) {
   const ref=useRef(null), mapRef=useRef(null), mksRef=useRef([]);
+  // Keep a ref to the latest onMapClick so the click handler always calls the current version
+  const onMapClickRef=useRef(onMapClick);
+  useEffect(()=>{ onMapClickRef.current=onMapClick; },[onMapClick]);
+
   useEffect(()=>{
     if(!document.getElementById("lf-css")){
       const l=document.createElement("link");l.id="lf-css";l.rel="stylesheet";
@@ -238,6 +249,8 @@ function LeafletMap({ height=220, lat=33.5138, lng=36.2765, zoom=12, markerA=nul
       const L=window.L;
       const m=L.map(ref.current,{center:[lat,lng],zoom,zoomControl:false,attributionControl:false,scrollWheelZoom:false,dragging:true,touchZoom:true});
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19}).addTo(m);
+      // Forward map clicks to whichever handler is current at the time of the click
+      m.on("click",(e)=>{ if(onMapClickRef.current) onMapClickRef.current({lat:e.latlng.lat,lng:e.latlng.lng}); });
       mapRef.current=m;
     };
     if(window.L){init();}
@@ -245,6 +258,12 @@ function LeafletMap({ height=220, lat=33.5138, lng=36.2765, zoom=12, markerA=nul
     return()=>{if(mapRef.current){mapRef.current.remove();mapRef.current=null;}};
   },[]); // eslint-disable-line
   useEffect(()=>{if(mapRef.current)mapRef.current.setView([lat,lng],zoom);},[lat,lng,zoom]);
+  // Update cursor to crosshair when in pin mode
+  useEffect(()=>{
+    if(!mapRef.current)return;
+    const c=mapRef.current.getContainer();
+    if(c) c.style.cursor=onMapClick?"crosshair":"";
+  },[onMapClick]);
   useEffect(()=>{
     if(!mapRef.current||!window.L)return;
     const L=window.L;
@@ -267,6 +286,11 @@ function LeafletMap({ height=220, lat=33.5138, lng=36.2765, zoom=12, markerA=nul
       <style>{`@keyframes driverPulse{0%{transform:scale(0.5);opacity:0.8}100%{transform:scale(2.5);opacity:0}}`}</style>
       <div ref={ref} style={{width:"100%",height:"100%"}}/>
       {badge&&<div style={{position:"absolute",top:10,left:10,zIndex:1000,pointerEvents:"none"}}><WaseeBadge/></div>}
+      {onMapClick&&(
+        <div style={{position:"absolute",top:10,left:"50%",transform:"translateX(-50%)",zIndex:1000,background:"rgba(28,28,26,0.82)",backdropFilter:"blur(6px)",borderRadius:20,padding:"5px 14px",pointerEvents:"none",whiteSpace:"nowrap"}}>
+          <span style={{fontSize:12,color:"#fff",fontWeight:700}}>📍 Tap map to place pin</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -607,25 +631,29 @@ function DriverPortal({ onBack, lang, pendingRideId }) {
     if(rideId) apiFetch(`/rides/${rideId}/status`,{method:"PUT",body:{status:"in_progress"}});
     setTripPhase("in_trip"); setTripTimer(0);
   };
-  const handleEndTrip=()=>{
+  const handleEndTrip=async ()=>{
     const rideId=getActiveRideId();
-    if(rideId) apiFetch(`/rides/${rideId}/status`,{method:"PUT",body:{status:"completed"}});
+    if(rideId) await apiFetch(`/rides/${rideId}/status`,{method:"PUT",body:{status:"completed"}});
     setTripPhase("ended");
     clearInterval(tripTimerRef.current);
     const earned=parseFloat(currentTrip?.fare||"4.00");
-    // Store trip data
+    const earnedSYP=Math.round(earned*SYP_RATE);
+    // Store trip data (also sent to TRIP_LOG for session-wide history)
     storeTripData({
       driver:driverFormRef.current.name||"Driver",
       from:currentTrip?.from, to:currentTrip?.to,
       passenger:currentTrip?.name, dist:currentTrip?.dist,
-      fare:earned, cash:true, duration:tripTimer
+      fare:earned, syp:earnedSYP, cash:true, duration:tripTimer
     });
-    setEarnings(e=>({ ...e,
+    setEarnings(e=>({...e,
       todayTotal:parseFloat((e.todayTotal+earned).toFixed(2)),
       weekTotal:parseFloat((e.weekTotal+earned).toFixed(2)),
       trips:e.trips+1,
-      history:[{from:currentTrip?.from,to:currentTrip?.to,fare:earned,dist:currentTrip?.dist,ts:new Date().toLocaleTimeString()},...e.history.slice(0,4)]
+      history:[{from:currentTrip?.from,to:currentTrip?.to,fare:earned,syp:earnedSYP,dist:currentTrip?.dist,ts:new Date().toLocaleTimeString()},...e.history.slice(0,4)]
     }));
+    // Refresh driver's average rating from backend
+    const { ok, data } = await apiFetch(`/drivers/${driverIdRef.current}`);
+    if(ok && data?.avgRating) setEarnings(e=>({...e, rating:parseFloat(data.avgRating)}));
   };
   const handleNewTrip=()=>{
     // Re-register driver as available
@@ -826,6 +854,7 @@ function DriverPortal({ onBack, lang, pendingRideId }) {
                   </div>
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:22,fontWeight:800,fontFamily:"'Playfair Display',serif",color:C.ink}}>${incomingRequest.fare}</div>
+                    <div style={{fontSize:13,color:C.olive,fontWeight:700}}>{fmtSYP(parseFloat(incomingRequest.fare))}</div>
                     <div style={{fontSize:11,color:C.ink3,fontFamily:"'DM Mono',monospace"}}>{incomingRequest.dist} km</div>
                     <div style={{fontSize:11,color:C.olive,fontFamily:"'DM Mono',monospace"}}>{incomingRequest.eta} min ETA</div>
                   </div>
@@ -854,7 +883,8 @@ function DriverPortal({ onBack, lang, pendingRideId }) {
             <div style={{fontSize:13,fontWeight:600}}>🏁 {currentTrip.to}</div>
             <div style={{display:"flex",gap:16,marginTop:8}}>
               <span style={{fontSize:12,color:C.ink3}}>{currentTrip.dist} km</span>
-              <span style={{fontSize:12,color:C.olive,fontWeight:700}}>💵 ${currentTrip.fare} {lang==="ar"?"نقداً":"cash"}</span>
+              <span style={{fontSize:12,color:C.olive,fontWeight:700}}>💵 ${currentTrip.fare}</span>
+              <span style={{fontSize:11,color:C.ink3}}>{fmtSYP(parseFloat(currentTrip.fare))}</span>
             </div>
           </div>
           <button onClick={handleStartTrip} style={{width:"100%",background:C.olive,border:"none",borderRadius:12,padding:"13px",fontSize:15,fontWeight:700,cursor:"pointer",color:"#fff"}}>{T.startTrip} →</button>
@@ -877,6 +907,7 @@ function DriverPortal({ onBack, lang, pendingRideId }) {
             <div style={{flex:1,background:C.oliveBg,border:"1px solid "+C.oliveBorder,borderRadius:10,padding:"10px 12px",textAlign:"center"}}>
               <div style={{fontSize:11,color:C.olive,fontFamily:"'DM Mono',monospace"}}>{T.tripEarned}</div>
               <div style={{fontSize:16,fontWeight:700,color:C.olive,marginTop:2}}>💵 ${currentTrip.fare}</div>
+              <div style={{fontSize:11,color:C.ink3,marginTop:1}}>{fmtSYP(parseFloat(currentTrip.fare))}</div>
             </div>
           </div>
           <div style={{fontSize:12,color:C.ink3,marginBottom:10}}>🏁 {currentTrip.to}</div>
@@ -890,7 +921,7 @@ function DriverPortal({ onBack, lang, pendingRideId }) {
           <div style={{textAlign:"center",marginBottom:16}}>
             <div style={{fontSize:40,marginBottom:8}}>🎉</div>
             <div style={{fontSize:18,fontFamily:"'Playfair Display',serif",fontWeight:800}}>{lang==="ar"?"انتهت الرحلة!":"Trip Complete!"}</div>
-            <div style={{fontSize:13,color:"#2d9e5f",marginTop:4}}>💵 ${currentTrip?.fare} {lang==="ar"?"نقداً":"cash"}</div>
+            <div style={{fontSize:13,color:"#2d9e5f",marginTop:4}}>💵 ${currentTrip?.fare} · {fmtSYP(parseFloat(currentTrip?.fare||0))}</div>
           </div>
           <div style={{borderTop:"1px solid "+C.border,paddingTop:16,marginBottom:16}}>
             <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>{T.ratePassenger}</div>
@@ -968,7 +999,10 @@ function DriverPortal({ onBack, lang, pendingRideId }) {
                     <div style={{fontSize:12,fontWeight:600}}>{h.from} → {h.to}</div>
                     <div style={{fontSize:11,color:C.ink3}}>{h.dist} km · {h.ts}</div>
                   </div>
-                  <div style={{fontSize:14,fontWeight:700,color:"#2d9e5f"}}>+${h.fare}</div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:14,fontWeight:700,color:"#2d9e5f"}}>+${h.fare}</div>
+                    <div style={{fontSize:11,color:C.ink3}}>{h.syp?Math.round(h.syp).toLocaleString()+" ل.س":""}</div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1012,7 +1046,6 @@ export default function App() {
   const [dropoff,setDropoff]=useState("");
   const [pickupCoords,setPickupCoords]=useState(SAVED[0]);
   const [dropoffCoords,setDropoffCoords]=useState(null);
-  const [selectedRide,setSelectedRide]=useState(null);
   const [bookingStep,setBookingStep]=useState(0);
   const [driver,setDriver]=useState(null);
   const [rideProgress,setRideProgress]=useState(0);
@@ -1051,6 +1084,10 @@ export default function App() {
   const [showSubscription,setShowSubscription]=useState(false);
   const [isSubscribed,setIsSubscribed]=useState(false);
   const [subscriptionMonth,setSubscriptionMonth]=useState(0); // 0=never,1=first,2+=ongoing
+  // Map pin mode for home screen: null | 'pickup' | 'dropoff'
+  const [pinMode,setPinMode]=useState(null);
+  // Selected ride type (Swift / Comfort / XL / …)
+  const [selectedRide,setSelectedRide]=useState(RIDES[0]);
 
   // Match: when rider books, simulate a nearby driver sending a request notification
   const matchAndRequest=(tripData)=>{
@@ -1096,20 +1133,20 @@ export default function App() {
     }
     setTimeout(()=>setBookingStep(2),1800);
   };
-  // Distance-based pricing: 0.8$/km base + $3 Wasee service fee
+  // Distance-based pricing: $1 USD base + $1.50/km (× ride-type multiplier × surge)
+  // Matches the "$1 USD start + $1–2 per km" requirement; displayed in SYP too.
   const calcDistKm=(a,b)=>{
     if(!a||!b)return 5; // default 5km
     const R=6371,dLat=(b.lat-a.lat)*Math.PI/180,dLng=(b.lng-a.lng)*Math.PI/180;
     const x=Math.sin(dLat/2)**2+Math.cos(a.lat*Math.PI/180)*Math.cos(b.lat*Math.PI/180)*Math.sin(dLng/2)**2;
     return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
   };
-  const WASEE_FEE=3;
-  const RATE_PER_KM=0.8;
-  const computePrice=(opts={})=>{
+  const computePrice=()=>{
     const km=calcDistKm(pickupCoords,dropoffCoords);
-    const base=(km*RATE_PER_KM*surge).toFixed(2);
-    const total=(parseFloat(base)+WASEE_FEE).toFixed(2);
-    return {base:parseFloat(base),fee:WASEE_FEE,total:parseFloat(total),km:km.toFixed(1)};
+    const mult=(selectedRide?.multiplier||1);
+    const usd=Math.max(1.00,(1.00+1.50*km)*mult*surge);
+    const syp=Math.round(usd*SYP_RATE);
+    return {km:km.toFixed(1),total:parseFloat(usd.toFixed(2)),syp};
   };
   const fmtPrice=(p)=>{const n=typeof p==="object"?p.total:p;return "$"+(typeof n==="number"?n.toFixed(2):n);};
 
@@ -1157,10 +1194,30 @@ export default function App() {
       </div>
 
       <div style={{position:"relative"}}>
-        <LeafletMap height={220} lat={mapCity.lat} lng={mapCity.lng} zoom={mapCity.zoom} rounded={false} badge={false}/>
+        <LeafletMap height={220} lat={mapCity.lat} lng={mapCity.lng} zoom={mapCity.zoom}
+          rounded={false} badge={false}
+          markerA={pickupCoords} markerB={dropoffCoords}
+          onMapClick={pinMode?(({lat,lng})=>{
+            const label=`${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+            if(pinMode==="pickup"){setPickupCoords({lat,lng});setPickup(lang==="ar"?"موقع على الخريطة":"Location on map");}
+            else{setDropoffCoords({lat,lng});setDropoff(lang==="ar"?"وجهة على الخريطة":"Destination on map");}
+            setPinMode(null);
+          }):null}
+        />
         <div style={{position:"absolute",bottom:10,left:12,zIndex:410}}><WaseeBadge/></div>
         <div style={{position:"absolute",bottom:10,right:12,zIndex:410,background:"rgba(242,240,235,0.94)",backdropFilter:"blur(8px)",border:"1px solid "+C.border,borderRadius:8,padding:"5px 11px"}}>
           <span style={{fontSize:11,color:C.olive,fontFamily:"'DM Mono',monospace",fontWeight:700}}>⚡ {surge}x {T.surgeLabel}</span>
+        </div>
+        {/* Pin-mode toggle buttons overlaid at the bottom of the map */}
+        <div style={{position:"absolute",bottom:40,left:"50%",transform:"translateX(-50%)",zIndex:420,display:"flex",gap:6}}>
+          <button onClick={()=>setPinMode(p=>p==="pickup"?null:"pickup")}
+            style={{background:pinMode==="pickup"?C.olive:"rgba(242,240,235,0.92)",border:"1.5px solid "+(pinMode==="pickup"?C.olive:C.border),borderRadius:20,padding:"6px 12px",cursor:"pointer",fontSize:12,fontWeight:700,color:pinMode==="pickup"?"#fff":C.ink,backdropFilter:"blur(6px)"}}>
+            📍 {lang==="ar"?"تثبيت نقطة الانطلاق":"Pin Pickup"}
+          </button>
+          <button onClick={()=>setPinMode(p=>p==="dropoff"?null:"dropoff")}
+            style={{background:pinMode==="dropoff"?C.oliveDark:"rgba(242,240,235,0.92)",border:"1.5px solid "+(pinMode==="dropoff"?C.oliveDark:C.border),borderRadius:20,padding:"6px 12px",cursor:"pointer",fontSize:12,fontWeight:700,color:pinMode==="dropoff"?"#fff":C.ink,backdropFilter:"blur(6px)"}}>
+            🏁 {lang==="ar"?"تثبيت الوجهة":"Pin Dropoff"}
+          </button>
         </div>
       </div>
 
@@ -1285,6 +1342,8 @@ export default function App() {
             <div style={{fontSize:44,fontFamily:"'Playfair Display',serif",fontWeight:800,color:C.ink}}>
               {fmtPrice(computePrice().total)}
             </div>
+            {/* Syrian Pounds equivalent */}
+            <div style={{fontSize:16,color:C.olive,fontWeight:700,marginTop:4}}>{fmtSYP(computePrice().total)}</div>
             <div style={{fontSize:12,color:C.ink3,marginTop:4}}>{lang==="ar"?"دُفع نقداً للسائق":"Paid in cash to driver"}</div>
           </div>
           <div style={{borderTop:"1px solid "+C.border,marginTop:18,paddingTop:18}}>
@@ -1304,9 +1363,14 @@ export default function App() {
           </div>
         </div>
         <div style={{display:"flex",gap:10,width:"100%",maxWidth:340}}>
-          <button onClick={()=>{
-              storeTrip(activeTripId,{fare:computePrice().total,pickup,dropoff,driver:driver?.name,rating});
-              setScreen("home");setBookingStep(0);setPickup("");setDropoff("");setRating(0);setRideProgress(0);
+          <button onClick={async ()=>{
+              const p=computePrice();
+              // Submit rating to backend so driver's average is updated
+              if(activeTripId&&rating>0){
+                await apiFetch(`/rides/${activeTripId}/rating`,{method:"PUT",body:{rating}});
+              }
+              storeTrip(activeTripId,{fare:p.total,syp:p.syp,pickup,dropoff,driver:driver?.name,rating,rideType:selectedRide?.id});
+              setScreen("home");setBookingStep(0);setPickup("");setDropoff("");setRating(0);setRideProgress(0);setPinMode(null);
             }}
             style={{flex:1,background:C.olive,border:"none",borderRadius:12,padding:15,fontSize:15,fontWeight:700,cursor:"pointer",color:"#fff"}}>{T.doneBtnLabel}</button>
           <button style={{flex:1,background:C.surface2,border:"1px solid "+C.border,borderRadius:12,padding:15,fontSize:14,cursor:"pointer",color:C.ink2}}>{T.receipt}</button>
@@ -1434,7 +1498,7 @@ export default function App() {
               <span style={{fontSize:11,color:C.olive,fontFamily:"'DM Mono',monospace",fontWeight:700}}>⚡ {surge}x {T.surgeLabel}</span>
             </div>
           </div>
-          {/* Route summary */}
+          {/* Route summary with SYP price */}
           <div style={{...card({padding:16,marginBottom:14})}}>
             <div style={{display:"flex",alignItems:"center",gap:12}}>
               <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,flexShrink:0}}>
@@ -1447,15 +1511,30 @@ export default function App() {
                 <div style={{fontSize:14,color:C.ink2}}>{dropoff||"—"}</div>
               </div>
               <div style={{textAlign:"right",flexShrink:0}}>
-                <div style={{fontSize:20,fontWeight:800,fontFamily:"'Playfair Display',serif",color:C.ink}}>
-                  {(pickup&&dropoff)?("$"+computePrice().total.toFixed(2)):"—"}
-                </div>
-                <div style={{fontSize:10,color:C.ink3,fontFamily:"'DM Mono',monospace"}}>
-                  {(pickup&&dropoff)?(computePrice().km+" km · $3 "+(lang==="ar"?"رسوم واصي":"Wasee fee")):(lang==="ar"?"أدخل الوجهة لمعرفة السعر":"Enter destination for price")}
-                </div>
+                {(pickup&&dropoff)?(()=>{const p=computePrice();return(<>
+                  <div style={{fontSize:20,fontWeight:800,fontFamily:"'Playfair Display',serif",color:C.ink}}>${p.total.toFixed(2)}</div>
+                  <div style={{fontSize:13,color:C.olive,fontWeight:700,marginTop:1}}>{fmtSYP(p.total)}</div>
+                  <div style={{fontSize:10,color:C.ink3,fontFamily:"'DM Mono',monospace",marginTop:1}}>{p.km} km · $1 {lang==="ar"?"ابتداءً":"start"} +$1.50/km</div>
+                </>);})():<div style={{fontSize:14,color:C.ink3}}>—</div>}
                 <div style={{fontSize:11,color:C.ink3,fontFamily:"'DM Mono',monospace",marginTop:2}}>~5 {T.minutes}</div>
               </div>
             </div>
+          </div>
+          {/* Ride type selector */}
+          <div style={lbl({marginBottom:8})}>{T.chooseRide}</div>
+          <div style={{display:"flex",gap:8,marginBottom:14,overflowX:"auto",scrollbarWidth:"none",paddingBottom:4}}>
+            {RIDES.map(r=>{
+              const rp=computePrice();const rUsd=(rp.total*r.multiplier/( selectedRide?.multiplier||1));
+              return(
+                <button key={r.id} onClick={()=>setSelectedRide(r)}
+                  style={{flexShrink:0,minWidth:110,...card({padding:"12px 10px",cursor:"pointer",border:"1.5px solid "+(selectedRide?.id===r.id?C.olive:C.border),background:selectedRide?.id===r.id?C.oliveBg:C.surface,textAlign:"center"})}}>
+                  <div style={{fontSize:22,marginBottom:4}}>{r.icon}</div>
+                  <div style={{fontSize:13,fontWeight:700,color:selectedRide?.id===r.id?C.olive:C.ink}}>{lang==="ar"?r.ar:r.name}</div>
+                  <div style={{fontSize:11,color:C.olive,fontWeight:700,marginTop:2}}>${(rp.total*r.multiplier).toFixed(2)}</div>
+                  <div style={{fontSize:10,color:C.ink3,marginTop:1}}>{lang==="ar"?r.etaAr:r.etaEn}</div>
+                </button>
+              );
+            })}
           </div>
           <div style={{...card({padding:14,marginTop:14,display:"flex",alignItems:"center",gap:12})}}>
             <span style={{fontSize:22}}>💵</span>
@@ -1489,13 +1568,53 @@ export default function App() {
         </div>
         {activeTab==="recent"?(
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {/* Dynamic trips from this session (newest first) */}
+            {[...tripStore].filter(t=>!t.asDriver).reverse().map((t,i)=>(
+              <div key={"dyn-"+i} style={card({padding:16,border:"1.5px solid "+C.oliveBorder})}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <span style={lbl({color:C.olive})}>{lang==="ar"?"الآن":"TODAY · NEW"}</span>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:11,color:"#2d9e5f",fontFamily:"'DM Mono',monospace",fontWeight:700}}>✓ {T.done}</span>
+                    <div style={{textAlign:"right"}}>
+                      <span style={{fontSize:15,fontWeight:800,color:C.ink}}>${t.fare?.toFixed(2)||"—"}</span>
+                      <div style={{fontSize:11,color:C.olive,fontWeight:700}}>{t.syp?Math.round(t.syp).toLocaleString()+" ل.س":""}</div>
+                    </div>
+                  </div>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:10}}>
+                  <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,flexShrink:0}}>
+                    <div style={{width:9,height:9,borderRadius:"50%",background:C.olive}}/>
+                    <div style={{width:1.5,height:20,background:C.border}}/>
+                    <div style={{width:9,height:9,borderRadius:2,background:C.olive}}/>
+                  </div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:14,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.pickup||"—"}</div>
+                    <div style={{fontSize:14,color:C.ink2,marginTop:5,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.dropoff||"—"}</div>
+                  </div>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:10,borderTop:"1px solid "+C.border}}>
+                  <div>
+                    <span style={{fontSize:12,color:C.ink3}}>{t.driver||"—"}</span>
+                    {t.rating>0&&<span style={{fontSize:11,marginLeft:8,color:C.olive}}>{"⭐".repeat(t.rating)}</span>}
+                  </div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>{setPickup(t.pickup||"");setDropoff(t.dropoff||"");setScreen("home");}}
+                      style={{background:C.olive,border:"none",borderRadius:8,padding:"6px 14px",cursor:"pointer",fontSize:13,color:"#fff",fontWeight:600}}>{T.rebook}</button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {/* Static sample trips */}
             {ACTIVITY.map((a,i)=>(
               <div key={i} style={card({padding:16})}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
                   <span style={lbl()}>{lang==="ar"?a.dateAr:a.dateEn}</span>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
                     <span style={{fontSize:11,color:C.olive,fontFamily:"'DM Mono',monospace",fontWeight:700}}>✓ {T.done}</span>
-                    <span style={{fontSize:16,fontWeight:800,color:C.ink}}>{a.fare}</span>
+                    <div style={{textAlign:"right"}}>
+                      <span style={{fontSize:16,fontWeight:800,color:C.ink}}>{a.fare}</span>
+                      <div style={{fontSize:11,color:C.olive,fontWeight:700}}>{a.fare?Math.round(parseFloat(a.fare.replace("$",""))*SYP_RATE).toLocaleString()+" ل.س":""}</div>
+                    </div>
                   </div>
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:10}}>
